@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamiDash - Pro Player</title>
+    <script src="https://unpkg.com/jsnes/dist/jsnes.min.js"></script>
+    <style>
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            background: #000; overflow: hidden; color: white;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #canvas { 
+            width: 100vw; height: 100vh; 
+            object-fit: contain; 
+            image-rendering: pixelated;
+        }
+        /* Settings Overlay */
+        #menu {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(20, 20, 20, 0.95); padding: 30px; border-radius: 15px;
+            border: 2px solid #444; display: none; flex-direction: column; 
+            gap: 10px; z-index: 100; min-width: 300px;
+        }
+        .menu-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+        button { 
+            background: #444; color: white; border: none; padding: 8px 15px; 
+            cursor: pointer; border-radius: 5px; font-weight: bold;
+        }
+        button:hover { background: #666; }
+        .reset-btn { background: #822; }
+        .reset-btn:hover { background: #a33; }
+        .hint { position: absolute; bottom: 10px; left: 10px; color: #555; font-size: 12px; }
+        #loading { position: absolute; font-family: monospace; letter-spacing: 2px; }
+        .binding { color: #0cf; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <div id="loading">LOADING FAMIDASH...</div>
+    
+    <div id="menu">
+        <h2 style="margin-top:0; text-align:center;">SETTINGS</h2>
+        <div id="controls-list"></div>
+        <hr style="width:100%; border:0; border-top:1px solid #444; margin:10px 0;">
+        <div class="menu-row">
+            <span>System</span>
+            <button class="reset-btn" onclick="resetGame()">RESET ROM</button>
+        </div>
+        <button style="margin-top:10px; background:#080;" onclick="toggleMenu()">CLOSE (ESC)</button>
+    </div>
+
+    <div class="hint">Press ESC for Settings / Controls</div>
+    <canvas id="canvas" width="256" height="240"></canvas>
+
+    <script>
+        const ROM_URL = "https://raw.githubusercontent.com/d3add3v/famidash/main/Famidash%20-%20Huge%20Man%20v1.2.8.nes";
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const menu = document.getElementById('menu');
+        const controlsList = document.getElementById('controls-list');
+        let currentRomData = null;
+
+        let imageData = ctx.createImageData(256, 240);
+        let buf = new Uint32Array(imageData.data.buffer);
+
+        // --- Controller Setup ---
+        let config = {
+            UP: { code: 'ArrowUp', label: 'UP', nes: jsnes.Controller.BUTTON_UP },
+            DOWN: { code: 'ArrowDown', label: 'DOWN', nes: jsnes.Controller.BUTTON_DOWN },
+            LEFT: { code: 'ArrowLeft', label: 'LEFT', nes: jsnes.Controller.BUTTON_LEFT },
+            RIGHT: { code: 'ArrowRight', label: 'RIGHT', nes: jsnes.Controller.BUTTON_RIGHT },
+            A: { code: 'KeyX', label: 'A (Jump)', nes: jsnes.Controller.BUTTON_A },
+            B: { code: 'KeyZ', label: 'B (Dash)', nes: jsnes.Controller.BUTTON_B },
+            START: { code: 'Enter', label: 'START', nes: jsnes.Controller.BUTTON_START },
+            SELECT: { code: 'ShiftLeft', label: 'SELECT', nes: jsnes.Controller.BUTTON_SELECT }
+        };
+
+        let listeningForKey = null;
+
+        function renderMenu() {
+            controlsList.innerHTML = '';
+            for (let key in config) {
+                const row = document.createElement('div');
+                row.className = 'menu-row';
+                row.innerHTML = `
+                    <span>${config[key].label}</span>
+                    <button onclick="startListen('${key}')" class="binding">${listeningForKey === key ? '???' : config[key].code}</button>
+                `;
+                controlsList.appendChild(row);
+            }
+        }
+
+        function startListen(key) {
+            listeningForKey = key;
+            renderMenu();
+        }
+
+        function toggleMenu() {
+            menu.style.display = menu.style.display === 'flex' ? 'none' : 'flex';
+            if (menu.style.display === 'flex') renderMenu();
+        }
+
+        // --- Audio Logic ---
+        let audioCtx = null;
+        let audioSamples = [];
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+            const scriptNode = audioCtx.createScriptProcessor(2048, 0, 2);
+            scriptNode.onaudioprocess = (e) => {
+                const left = e.outputBuffer.getChannelData(0);
+                const right = e.outputBuffer.getChannelData(1);
+                for (let i = 0; i < 2048; i++) left[i] = right[i] = audioSamples.shift() || 0;
+            };
+            scriptNode.connect(audioCtx.destination);
+        }
+
+        const nes = new jsnes.NES({
+            onFrame: (frameBuffer) => {
+                for (let i = 0; i < 61440; i++) buf[i] = 0xFF000000 | frameBuffer[i];
+                ctx.putImageData(imageData, 0, 0);
+            },
+            onAudioSample: (s) => { if (audioSamples.length < 4096) audioSamples.push(s); }
+        });
+
+        // --- Input Handling ---
+        window.onkeydown = (e) => {
+            if (e.code === 'Escape') { toggleMenu(); return; }
+            
+            if (listeningForKey) {
+                config[listeningForKey].code = e.code;
+                listeningForKey = null;
+                renderMenu();
+                e.preventDefault();
+                return;
+            }
+
+            initAudio();
+            for (let key in config) {
+                if (e.code === config[key].code) {
+                    nes.buttonDown(1, config[key].nes);
+                    e.preventDefault();
+                }
+            }
+        };
+
+        window.onkeyup = (e) => {
+            for (let key in config) {
+                if (e.code === config[key].code) {
+                    nes.buttonUp(1, config[key].nes);
+                    e.preventDefault();
+                }
+            }
+        };
+
+        function resetGame() {
+            if (currentRomData) {
+                nes.loadROM(currentRomData);
+                toggleMenu();
+            }
+        }
+
+        async function start() {
+            try {
+                const response = await fetch(ROM_URL);
+                const arrayBuffer = await response.arrayBuffer();
+                currentRomData = new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '');
+                
+                document.getElementById('loading').style.display = 'none';
+                nes.loadROM(currentRomData);
+                
+                function frame() {
+                    nes.frame();
+                    requestAnimationFrame(frame);
+                }
+                requestAnimationFrame(frame);
+            } catch (err) {
+                document.getElementById('loading').innerText = "LOAD ERROR";
+            }
+        }
+
+        start();
+    </script>
+</body>
+</html>
